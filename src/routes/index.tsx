@@ -239,6 +239,8 @@ function Scanner() {
   const [fee, setFee] = useState(DEFAULT_FEE);
   const [assetFilter, setAssetFilter] = useState("All routes");
   const [maxLegs, setMaxLegs] = useState(4);
+  const [useConvert, setUseConvert] = useState(true);
+  const [convertSpread, setConvertSpread] = useState(DEFAULT_CONVERT_SPREAD);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"opportunities" | "markets">("opportunities");
 
