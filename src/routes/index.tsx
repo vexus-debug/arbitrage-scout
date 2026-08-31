@@ -22,8 +22,8 @@ type Ticker = {
 };
 
 type MarketResponse = { fetchedAt: string; instruments: Instrument[]; tickers: Ticker[] };
-type Leg = { symbol: string; from: string; to: string; side: "Sell" | "Buy"; price: number };
-type Opportunity = { id: string; assets: string[]; legs: Leg[]; gross: number; net: number; volume: number; stock: boolean };
+type Leg = { symbol: string; from: string; to: string; side: "Sell" | "Buy"; price: number; stock: boolean };
+type Opportunity = { id: string; assets: string[]; legs: Leg[]; gross: number; net: number; volume: number; stock: boolean; stocks: number };
 
 const REFRESH_MS = 10_000;
 const DEFAULT_FEE = 0.001;
