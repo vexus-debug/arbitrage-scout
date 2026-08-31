@@ -22,11 +22,13 @@ type Ticker = {
 };
 
 type MarketResponse = { fetchedAt: string; instruments: Instrument[]; tickers: Ticker[] };
-type Leg = { symbol: string; from: string; to: string; side: "Sell" | "Buy"; price: number; stock: boolean };
-type Opportunity = { id: string; assets: string[]; legs: Leg[]; gross: number; net: number; volume: number; stock: boolean; stocks: number };
+type Leg = { symbol: string; from: string; to: string; side: "Sell" | "Buy" | "Convert"; price: number; stock: boolean };
+type Opportunity = { id: string; assets: string[]; legs: Leg[]; gross: number; net: number; volume: number; stock: boolean; stocks: number; converts: number };
 
 const REFRESH_MS = 10_000;
 const DEFAULT_FEE = 0.001;
+const DEFAULT_CONVERT_SPREAD = 0.002;
+const CONVERT_HUB_LIMIT = 60;
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -58,7 +60,7 @@ function formatPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(3)}%`;
 }
 
-type Edge = { to: string; symbol: string; side: "Sell" | "Buy"; rate: number; price: number; stock: boolean; volume: number };
+type Edge = { to: string; symbol: string; side: "Sell" | "Buy" | "Convert"; rate: number; price: number; stock: boolean; volume: number };
 
 function buildGraph(instruments: Instrument[], tickers: Ticker[]) {
   const quoteMap = new Map(tickers.map((item) => [item.symbol, item]));
@@ -86,10 +88,81 @@ function buildGraph(instruments: Instrument[], tickers: Ticker[]) {
   return graph;
 }
 
-function buildOpportunities(instruments: Instrument[], tickers: Ticker[], fee: number, maxLegs: number) {
+/** USD reference value per asset, derived from USDT/USDC spot mid prices. */
+function buildUsdIndex(instruments: Instrument[], tickers: Ticker[]) {
+  const quoteMap = new Map(tickers.map((item) => [item.symbol, item]));
+  const usd = new Map<string, number>([["USDT", 1], ["USDC", 1]]);
+  const turnover = new Map<string, number>();
+  const stocks = new Set<string>();
+
+  for (const instrument of instruments) {
+    if (instrument.status !== "Trading") continue;
+    const ticker = quoteMap.get(instrument.symbol);
+    if (!ticker) continue;
+    const bid = parseNumber(ticker.bid1Price);
+    const ask = parseNumber(ticker.ask1Price);
+    if (bid <= 0 || ask <= 0) continue;
+    const mid = (bid + ask) / 2;
+    const volume = parseNumber(ticker.turnover24h);
+    if (instrument.symbolType === "xstocks") stocks.add(instrument.baseCoin);
+    if (instrument.quoteCoin === "USDT" || instrument.quoteCoin === "USDC") {
+      if (!usd.has(instrument.baseCoin)) usd.set(instrument.baseCoin, mid);
+      turnover.set(instrument.baseCoin, Math.max(turnover.get(instrument.baseCoin) ?? 0, volume));
+    }
+  }
+  return { usd, turnover, stocks };
+}
+
+/**
+ * Bybit Convert lets any listed asset be swapped directly for any other, bypassing the
+ * missing spot pairs (xStocks are USDT-only in spot). Convert quotes are not on the public
+ * API, so each convert edge is priced from the USD reference mid minus an assumed spread.
+ */
+function buildConvertEdges(instruments: Instrument[], tickers: Ticker[], spread: number) {
+  const { usd, turnover, stocks } = buildUsdIndex(instruments, tickers);
+  const hubs = [...turnover.entries()]
+    .filter(([asset]) => usd.has(asset) && !stocks.has(asset))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, CONVERT_HUB_LIMIT)
+    .map(([asset]) => asset);
+  const universe = [...new Set([...stocks, ...hubs, "USDT", "USDC"])].filter((asset) => (usd.get(asset) ?? 0) > 0);
+
+  const edges = new Map<string, Edge[]>();
+  for (const from of universe) {
+    const list: Edge[] = [];
+    for (const to of universe) {
+      if (from === to) continue;
+      const fromUsd = usd.get(from) ?? 0;
+      const toUsd = usd.get(to) ?? 0;
+      if (fromUsd <= 0 || toUsd <= 0) continue;
+      list.push({
+        to,
+        symbol: `CONVERT:${from}->${to}`,
+        side: "Convert",
+        rate: (fromUsd / toUsd) * (1 - spread),
+        price: fromUsd / toUsd,
+        stock: stocks.has(from) || stocks.has(to),
+        volume: Math.min(turnover.get(from) ?? Infinity, turnover.get(to) ?? Infinity),
+      });
+    }
+    edges.set(from, list);
+  }
+  return { edges, stocks };
+}
+
+function buildOpportunities(
+  instruments: Instrument[],
+  tickers: Ticker[],
+  fee: number,
+  maxLegs: number,
+  useConvert: boolean,
+  convertSpread: number,
+) {
   const graph = buildGraph(instruments, tickers);
+  const convert = useConvert ? buildConvertEdges(instruments, tickers, convertSpread) : null;
   const starts = ["USDT", "USDC", "BTC", "ETH"].filter((asset) => graph.has(asset));
   const candidates: Opportunity[] = [];
+  const isStockAsset = (asset: string) => convert?.stocks.has(asset) ?? false;
 
   for (const start of starts) {
     const path: Leg[] = [];
@@ -97,8 +170,8 @@ function buildOpportunities(instruments: Instrument[], tickers: Ticker[], fee: n
     const usedSymbols = new Set<string>();
 
     const walk = (asset: string, amount: number, minVolume: number) => {
-      const edges = graph.get(asset);
-      if (!edges) return;
+      const edges = [...(graph.get(asset) ?? []), ...(convert?.edges.get(asset) ?? [])];
+      if (edges.length === 0) return;
       for (const edge of edges) {
         if (usedSymbols.has(edge.symbol)) continue;
         const next = amount * edge.rate;
@@ -109,17 +182,21 @@ function buildOpportunities(instruments: Instrument[], tickers: Ticker[], fee: n
           if (path.length + 1 >= 3 && volume >= 1000) {
             const legs = [...path, leg];
             const gross = next - 1;
-            const net = (1 + gross) * Math.pow(1 - fee, legs.length) - 1;
-            const stocks = legs.filter((item) => item.stock).length;
+            const spotLegs = legs.filter((item) => item.side !== "Convert").length;
+            const converts = legs.length - spotLegs;
+            const net = (1 + gross) * Math.pow(1 - fee, spotLegs) - 1;
+            const assets = [start, ...legs.map((item) => item.to)];
+            const stocks = new Set(assets.filter(isStockAsset)).size;
             candidates.push({
               id: `${start}-${legs.map((item) => item.symbol).join("-")}`,
-              assets: [start, ...legs.map((item) => item.to)],
+              assets,
               legs,
               gross,
               net,
               volume,
               stock: stocks > 0,
               stocks,
+              converts,
             });
           }
           continue;
@@ -162,6 +239,8 @@ function Scanner() {
   const [fee, setFee] = useState(DEFAULT_FEE);
   const [assetFilter, setAssetFilter] = useState("All routes");
   const [maxLegs, setMaxLegs] = useState(4);
+  const [useConvert, setUseConvert] = useState(true);
+  const [convertSpread, setConvertSpread] = useState(DEFAULT_CONVERT_SPREAD);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"opportunities" | "markets">("opportunities");
 
@@ -187,7 +266,7 @@ function Scanner() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, scan]);
 
-  const opportunities = useMemo(() => market ? buildOpportunities(market.instruments, market.tickers, fee, maxLegs) : [], [market, fee, maxLegs]);
+  const opportunities = useMemo(() => market ? buildOpportunities(market.instruments, market.tickers, fee, maxLegs, useConvert, convertSpread) : [], [market, fee, maxLegs, useConvert, convertSpread]);
   const threshold = parseNumber(minProfit) / 100;
   const matchesUniverse = (item: Opportunity) => {
     if (assetFilter === "Crypto only") return item.stocks === 0;
