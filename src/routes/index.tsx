@@ -187,9 +187,16 @@ function Scanner() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, scan]);
 
-  const opportunities = useMemo(() => market ? buildOpportunities(market.instruments, market.tickers, fee) : [], [market, fee]);
+  const opportunities = useMemo(() => market ? buildOpportunities(market.instruments, market.tickers, fee, maxLegs) : [], [market, fee, maxLegs]);
   const threshold = parseNumber(minProfit) / 100;
-  const filtered = opportunities.filter((item) => item.net >= threshold && (assetFilter === "All assets" || (assetFilter === "xStocks" ? item.stock : !item.stock)) && (!query || item.assets.join(" ").toLowerCase().includes(query.toLowerCase())));
+  const matchesUniverse = (item: Opportunity) => {
+    if (assetFilter === "Crypto only") return item.stocks === 0;
+    if (assetFilter === "1+ xStock") return item.stocks >= 1;
+    if (assetFilter === "2+ xStocks") return item.stocks >= 2;
+    if (assetFilter === "3+ xStocks") return item.stocks >= 3;
+    return true;
+  };
+  const filtered = opportunities.filter((item) => item.net >= threshold && matchesUniverse(item) && (!query || item.assets.join(" ").toLowerCase().includes(query.toLowerCase())));
   const xstocks = market?.instruments.filter((item) => item.symbolType === "xstocks") ?? [];
   const cryptoInstruments = market?.instruments.filter((item) => item.symbolType !== "xstocks" && item.status === "Trading") ?? [];
   const best = opportunities[0];
