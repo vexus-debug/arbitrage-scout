@@ -22,11 +22,13 @@ type Ticker = {
 };
 
 type MarketResponse = { fetchedAt: string; instruments: Instrument[]; tickers: Ticker[] };
-type Leg = { symbol: string; from: string; to: string; side: "Sell" | "Buy"; price: number; stock: boolean };
-type Opportunity = { id: string; assets: string[]; legs: Leg[]; gross: number; net: number; volume: number; stock: boolean; stocks: number };
+type Leg = { symbol: string; from: string; to: string; side: "Sell" | "Buy" | "Convert"; price: number; stock: boolean };
+type Opportunity = { id: string; assets: string[]; legs: Leg[]; gross: number; net: number; volume: number; stock: boolean; stocks: number; converts: number };
 
 const REFRESH_MS = 10_000;
 const DEFAULT_FEE = 0.001;
+const DEFAULT_CONVERT_SPREAD = 0.002;
+const CONVERT_HUB_LIMIT = 60;
 
 export const Route = createFileRoute("/")({
   head: () => ({
