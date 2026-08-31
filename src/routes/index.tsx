@@ -266,7 +266,7 @@ function Scanner() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, scan]);
 
-  const opportunities = useMemo(() => market ? buildOpportunities(market.instruments, market.tickers, fee, maxLegs) : [], [market, fee, maxLegs]);
+  const opportunities = useMemo(() => market ? buildOpportunities(market.instruments, market.tickers, fee, maxLegs, useConvert, convertSpread) : [], [market, fee, maxLegs, useConvert, convertSpread]);
   const threshold = parseNumber(minProfit) / 100;
   const matchesUniverse = (item: Opportunity) => {
     if (assetFilter === "Crypto only") return item.stocks === 0;
