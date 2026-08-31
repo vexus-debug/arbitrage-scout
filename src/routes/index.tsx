@@ -58,55 +58,92 @@ function formatPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(3)}%`;
 }
 
-function buildOpportunities(instruments: Instrument[], tickers: Ticker[], fee: number) {
-  const instrumentMap = new Map(instruments.map((item) => [item.symbol, item]));
-  const quoteMap = new Map(tickers.map((item) => [item.symbol, item]));
-  const assets = new Set<string>();
-  for (const item of instruments) {
-    if (item.status === "Trading" && quoteMap.has(item.symbol)) {
-      assets.add(item.baseCoin);
-      assets.add(item.quoteCoin);
-    }
-  }
+type Edge = { to: string; symbol: string; side: "Sell" | "Buy"; rate: number; price: number; stock: boolean; volume: number };
 
-  const convert = (from: string, to: string, amount: number): { amount: number; leg: Leg } | null => {
-    const direct = quoteMap.get(`${from}${to}`);
-    if (direct && parseNumber(direct.bid1Price) > 0) {
-      return { amount: amount * parseNumber(direct.bid1Price), leg: { symbol: direct.symbol, from, to, side: "Sell", price: parseNumber(direct.bid1Price) } };
-    }
-    const inverse = quoteMap.get(`${to}${from}`);
-    if (inverse && parseNumber(inverse.ask1Price) > 0) {
-      return { amount: amount / parseNumber(inverse.ask1Price), leg: { symbol: inverse.symbol, from, to, side: "Buy", price: parseNumber(inverse.ask1Price) } };
-    }
-    return null;
+function buildGraph(instruments: Instrument[], tickers: Ticker[]) {
+  const quoteMap = new Map(tickers.map((item) => [item.symbol, item]));
+  const graph = new Map<string, Edge[]>();
+  const push = (from: string, edge: Edge) => {
+    const list = graph.get(from);
+    if (list) list.push(edge);
+    else graph.set(from, [edge]);
   };
 
-  const starts = ["USDT", "USDC", "BTC", "ETH"].filter((asset) => assets.has(asset));
-  const candidates: Opportunity[] = [];
-  for (const start of starts) {
-    const firstAssets = [...assets].filter((asset) => asset !== start && asset.length <= 8);
-    for (const middle of firstAssets) {
-      const secondAssets = [...assets].filter((asset) => asset !== start && asset !== middle && asset.length <= 8);
-      for (const end of secondAssets) {
-        const one = convert(start, middle, 1);
-        const two = one ? convert(middle, end, one.amount) : null;
-        const three = two ? convert(end, start, two.amount) : null;
-        if (!one || !two || !three) continue;
-        const symbols = [one.leg.symbol, two.leg.symbol, three.leg.symbol];
-        const unique = new Set(symbols);
-        if (unique.size !== 3) continue;
-        const gross = three.amount - 1;
-        const net = (1 + gross) * Math.pow(1 - fee, 3) - 1;
-        const stock = [one, two, three].some((item) => instrumentMap.get(item.leg.symbol)?.symbolType === "xstocks");
-        const volume = Math.min(...symbols.map((symbol) => parseNumber(quoteMap.get(symbol)?.turnover24h ?? "0")));
-        if (volume < 1000) continue;
-        candidates.push({ id: `${start}-${middle}-${end}`, assets: [start, middle, end, start], legs: [one.leg, two.leg, three.leg], gross, net, volume, stock });
-      }
-    }
+  for (const instrument of instruments) {
+    if (instrument.status !== "Trading") continue;
+    const ticker = quoteMap.get(instrument.symbol);
+    if (!ticker) continue;
+    const bid = parseNumber(ticker.bid1Price);
+    const ask = parseNumber(ticker.ask1Price);
+    if (bid <= 0 || ask <= 0) continue;
+    const stock = instrument.symbolType === "xstocks";
+    const volume = parseNumber(ticker.turnover24h);
+    // sell base into quote at the bid
+    push(instrument.baseCoin, { to: instrument.quoteCoin, symbol: instrument.symbol, side: "Sell", rate: bid, price: bid, stock, volume });
+    // buy base with quote at the ask
+    push(instrument.quoteCoin, { to: instrument.baseCoin, symbol: instrument.symbol, side: "Buy", rate: 1 / ask, price: ask, stock, volume });
   }
+  return graph;
+}
+
+function buildOpportunities(instruments: Instrument[], tickers: Ticker[], fee: number, maxLegs: number) {
+  const graph = buildGraph(instruments, tickers);
+  const starts = ["USDT", "USDC", "BTC", "ETH"].filter((asset) => graph.has(asset));
+  const candidates: Opportunity[] = [];
+
+  for (const start of starts) {
+    const path: Leg[] = [];
+    const visited = new Set<string>([start]);
+    const usedSymbols = new Set<string>();
+
+    const walk = (asset: string, amount: number, minVolume: number) => {
+      const edges = graph.get(asset);
+      if (!edges) return;
+      for (const edge of edges) {
+        if (usedSymbols.has(edge.symbol)) continue;
+        const next = amount * edge.rate;
+        const volume = Math.min(minVolume, edge.volume);
+        const leg: Leg = { symbol: edge.symbol, from: asset, to: edge.to, side: edge.side, price: edge.price, stock: edge.stock };
+
+        if (edge.to === start) {
+          if (path.length + 1 >= 3 && volume >= 1000) {
+            const legs = [...path, leg];
+            const gross = next - 1;
+            const net = (1 + gross) * Math.pow(1 - fee, legs.length) - 1;
+            const stocks = legs.filter((item) => item.stock).length;
+            candidates.push({
+              id: `${start}-${legs.map((item) => item.symbol).join("-")}`,
+              assets: [start, ...legs.map((item) => item.to)],
+              legs,
+              gross,
+              net,
+              volume,
+              stock: stocks > 0,
+              stocks,
+            });
+          }
+          continue;
+        }
+
+        if (path.length + 1 >= maxLegs) continue;
+        if (visited.has(edge.to)) continue;
+
+        visited.add(edge.to);
+        usedSymbols.add(edge.symbol);
+        path.push(leg);
+        walk(edge.to, next, volume);
+        path.pop();
+        usedSymbols.delete(edge.symbol);
+        visited.delete(edge.to);
+      }
+    };
+
+    walk(start, 1, Infinity);
+  }
+
   const deduped = new Map<string, Opportunity>();
   for (const candidate of candidates) {
-    const key = [...candidate.legs].map((leg) => leg.symbol).sort().join("/");
+    const key = candidate.legs.map((leg) => leg.symbol).sort().join("/");
     if (!deduped.has(key) || (deduped.get(key)?.net ?? -Infinity) < candidate.net) deduped.set(key, candidate);
   }
   return [...deduped.values()].sort((a, b) => b.net - a.net);
