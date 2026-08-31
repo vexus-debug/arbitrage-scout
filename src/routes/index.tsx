@@ -226,6 +226,7 @@ function buildOpportunities(
   return [...deduped.values()].sort((a, b) => b.net - a.net);
 }
 
+function Asset({ name }: { name: string }) {
   return <span className="asset-badge" title={name}>{name.replace("USDT", "₮").replace("USDC", "$ ").slice(0, 4)}</span>;
 }
 
