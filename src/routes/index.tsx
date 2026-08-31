@@ -250,7 +250,7 @@ function Scanner() {
               <div className="flex items-center justify-between border-t border-border pt-5"><div><div className="text-sm font-medium text-foreground">Auto refresh</div><div className="mt-1 text-xs text-muted-foreground">Every 10 seconds</div></div><button aria-label="Toggle auto refresh" className="switch-track flex h-5 w-9 cursor-pointer items-center rounded-full p-0.5 transition-colors" data-on={autoRefresh} onClick={() => setAutoRefresh((value) => !value)}><span className="switch-thumb h-4 w-4 rounded-full transition-transform" /></button></div>
               <Button className="scan-button w-full" onClick={() => void scan()} disabled={loading}><RefreshCw className={loading ? "animate-spin" : ""} /> Scan now</Button>
             </div>
-            <div className="mt-6 flex gap-2 rounded-md border border-warning/25 bg-warning/10 p-3 text-[11px] leading-4 text-warning"><Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>xStocks are available as USDT pairs. Cross-stock routes require a direct stock/stock market, which Bybit does not currently list.</span></div>
+            <div className="mt-6 flex gap-2 rounded-md border border-warning/25 bg-warning/10 p-3 text-[11px] leading-4 text-warning"><Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>All {xstocks.length} Bybit xStocks trade only against USDT, with no stock/stock or stock/USDC market. A cycle can therefore touch at most one xStock — multi-stock routes will stay empty until Bybit lists another xStock quote pair. The scanner checks every listing each refresh, so they appear the moment they exist.</span></div>
           </aside>
         </section>
 
