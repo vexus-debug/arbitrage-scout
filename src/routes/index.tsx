@@ -160,7 +160,8 @@ function Scanner() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [minProfit, setMinProfit] = useState("0.10");
   const [fee, setFee] = useState(DEFAULT_FEE);
-  const [assetFilter, setAssetFilter] = useState("All assets");
+  const [assetFilter, setAssetFilter] = useState("All routes");
+  const [maxLegs, setMaxLegs] = useState(4);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"opportunities" | "markets">("opportunities");
 
